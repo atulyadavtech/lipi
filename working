@@ -22,3 +22,8 @@ done
 rm -f `rpm -qc packagename`; rpm -e packagname
 
 #Help
+
+
+
+#Copy RPM to destination
+find /PATH/TO/YOUR/FILES -name NAME.EXT -exec cp -rfp {} /DST_DIR \;
