@@ -1,12 +1,13 @@
 # Networ Udev Rule Managament
 
-/usr/lib/udev/rules.d/60-persistent-net.rules
+/etc/udev/rules.d/70-persistent-net.rules
 
 lspci -D | grep Ethernet
 0000:03:00.0 Ethernet controller: Broadcom Corporation NetXtreme BCM5719 Gigabit Ethernet PCIe (rev 01)
 
 # 0000:03:00.0 Ethernet controller:  was eth0
 ACTION=="add", SUBSYSTEM=="net", KERNELS=="0000:03:00.0", NAME:="eth0"
+##SUBSYSTEM=="net", ACTION=="add", DRIVERS=="?*", ATTR{address}=="08:00:27:c3:b2:fc", ATTR{type}=="1", KERNEL=="eth*", NAME="eth0"
 
 
 # udevadm test /class/net/eth0 2>&1 | grep NAME
