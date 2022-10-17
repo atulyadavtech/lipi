@@ -1,0 +1,158 @@
+#!/bin/bash
+#Script to collect information on KYC 
+#Date : 2018-09-27
+#Author : Altair India EC Team
+
+trap end_script SIGINT 
+# function to trap ctrl +c and exit the code
+function end_script(){
+    echo "
+    
+Exiting on User signal. The current backup is saved and available at  $backup_dir.
+Running the script again will resume the backup operation.
+If you want to start a new backup, delete the following files and folders manually
+        1. $backup_dir
+        2. $PBS_BACKUP_STATE_FILE
+        "
+		sleep 3
+        exit 1
+}
+
+#check if i am root
+[ "$(whoami)" != 'root' ]  && echo "This script needs to be run as root. Exiting." && exit 1
+
+############### Setting Up Environment ############
+#Check if rsync is available
+CP=$(which rsync)
+if (( $? ==0 )); then 
+    CP="$CP -aAvz "
+else
+    CP="$(which cp) -afvp "
+fi
+
+#check if resuming the backup. Works only if rsynced
+PBS_BACKUP_STATE_FILE=/tmp/.pbssitebackup.lck
+if [ ! -f $PBS_BACKUP_STATE_FILE ]; then
+    t_stamp=`date +%Y%m%d%H%M%S`
+    backup_dir="/root/PBSWorks_backup_$t_stamp"
+    echo "backup_dir=$backup_dir" >> $PBS_BACKUP_STATE_FILE
+    echo "Creating new backup directory $backup_dir"
+    mkdir $backup_dir
+else
+    source $PBS_BACKUP_STATE_FILE 
+    echo "Incomplete Backup found at $backup_dir . Continuing..."
+    sleep 3
+fi
+
+############### PBS Pro Backup #############
+if [ -f /etc/pbs.conf ];then
+    echo "PBSPro installation found ......................................."
+    echo "Backing up PBSPro installation found ............................"
+    source /etc/pbs.conf
+    cd $backup_dir
+    [ ! -f PBS ] && mkdir -p PBS
+    cd PBS
+    # Server configuration
+    $CP /etc/pbs.conf .
+    [ ! -f PBS_VERSION ]  && $PBS_EXEC/bin/qstat --version > ./PBS_VERSION
+    [ ! -f qmgr_server ]  && $PBS_EXEC/bin/qmgr -c "p s" > ./qmgr_server
+    [ ! -f qmgr_node ]    && $PBS_EXEC/bin/qmgr -c "p n @default" > ./qmgr_node
+    [ ! -f qmgr_hook  ]   && $PBS_EXEC/bin/qmgr -c "p h @default" > ./qmgr_hook
+    [ ! -f pbsnodes.out ] && $PBS_EXEC/bin/pbsnodes -av > ./pbsnodes.out # using -av instead of Sja
+
+    # Scheduler configuration
+    echo -e "\nBacking up scheduler configuration"; $CP $PBS_HOME/sched_priv .
+
+    #Mom configuration
+    nodes=`pbsnodes  -aSj | tail -n +4 | grep -v down  | awk '{print $1}'`
+    for node in $nodes; do 
+      scp $node:/etc/pbs.conf ./pbs.conf_$node
+      source ./pbs.conf_$node
+      scp -r $node:$PBS_HOME/mom_priv/ mom_priv_$node # Get the complete MoM priv folder instead of just the file
+    done
+    echo "PBS Backup Done ................................. Backup Directory is ${backup_dir}/PBS"
+else
+    echo "No PBS installation found ......................................."
+fi
+
+###################### PAS BACKUP ############
+if [ -f /etc/pas.conf ];then
+    source /etc/pas.conf
+    if [ -f $PAS_HOME/repository ];then
+        echo "PAS Installation found. Backing up ..."
+        cd $backup_dir
+        [ ! -f PAS ] && mkdir -p  PAS
+        cd PAS
+        $CP /etc/pas.conf .
+        $CP $PAS_HOME/repository .
+        $CP $PAS_HOME/conf/server.conf .
+    fi
+elif [ -f /etc/pbsworks-pa.conf ]; then
+    source /etc/pbsworks-pa.conf
+    if [ -f $PAS_REPO/targets ];then
+        echo "PAS Installation found. Backing up ..."
+        cd $backup_dir
+        [ ! -f PAS ] && mkdir -p  PAS
+        cd PAS
+        $CP /etc/pbsworks-pa.conf .
+        $CP $PAS_REPO/targets .
+        $CP $PA_HOME/config/pas/conf/server.conf .
+    fi
+    echo "PAS Backup Done ............................. Backup Directory is ${backup_dir}/PAS"
+else
+    echo "No PAS installation found................................."
+fi
+
+#### PBS Analytics ####
+if [ -f /etc/pbsworks-pbsa.conf ];then
+    source /etc/pbsworks-pbsa.conf
+    if [ ! -z $SERVER_HOME ]; then
+        echo "PBS Analytics Installation found. Backup Started..."
+        cd $backup_dir
+        [ ! -f PBSAnalytics ] && mkdir -p PBSAnalytics
+        cd PBSAnalytics
+        $CP $SERVER_HOME/services/pbsa/parser/modules/pbsdata/config .
+        echo "PBS Analytics Backup Completed..."
+    fi
+else
+    echo "No PBS Analytics installation found................................."
+fi
+
+###########################License Backup##################
+if [ -f /etc/init.d/altairlmxd ];then
+    echo "License Manager Backup started..........................."
+    cd $backup_dir
+    [ ! -f LICENSE ] && mkdir -p LICENSE
+    cd LICENSE
+    lic_dir=`grep ALTAIR_LMX_DIR /etc/init.d/altairlmxd |head -1|cut -d \" -f2`
+    cp $lic_dir/altair_lic.dat .
+    cp $lic_dir/altair-serv.cfg .
+    echo "License Backup Done ...........................Backup Directory is ${backup_dir}/LICENSE"
+else
+    echo "No License Manager installation Found......................."
+fi
+
+######################  SYSTEM LEVEL BACKUP ################
+echo "Starting SYSTEM Level Backup relevant to PBSworks"
+cd $backup_dir
+[ ! -f SYSTEM ] && mkdir -p SYSTEM
+cd SYSTEM
+for node in $nodes $HOSTNAME; do
+	mkdir -p $node
+	ssh $node /bin/hostname > ./$node/hostname
+	ssh $node df -h > ./$node/FileSystem
+	ssh $node /sbin/ifconfig > ./$node/IP_details
+	ssh $node cat /proc/cpuinfo > ./$node/cpuinfo
+	ssh $node cat /proc/meminfo > ./$node/meminfo
+	ssh $node free -g > ./$node/RAM
+	ssh $node uname -a > ./$node/uname_output
+	ssh $node $CP /etc/*release ./$node/ 
+	ssh $node $CP /etc/hosts ./$node/
+	ssh $node dmidecode > ./$node/dmidecode
+ 	ssh $node lscpu > ./$node/lscpu
+ 	ssh $node lspci -vvv > ./$node/lspci
+done
+
+#Mark the backup complete
+rm -f $PBS_BACKUP_STATE_FILE
+echo "SYSTEM Level Backup Done ...........................Backup Directory is ${backup_dir}/SYSTEM"
